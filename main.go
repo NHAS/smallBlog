@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sync"
 	"text/template"
+	"time"
 )
 
 var cacheLock sync.RWMutex
@@ -44,6 +45,9 @@ func renderTemplate(w http.ResponseWriter, p *Page) {
 }
 
 func pageHandler(w http.ResponseWriter, r *http.Request, toplevel string, bottomlevel string) {
+	firstLoad := false
+	initalTime := time.Now()
+
 	if len(bottomlevel) == 0 { // If there is no specified path. Just load default
 		cacheLock.RLock()
 		renderTemplate(w, cache[toplevel])
@@ -63,17 +67,22 @@ func pageHandler(w http.ResponseWriter, r *http.Request, toplevel string, bottom
 			page, err := loadPage(bottomlevel, toplevel+"/"+bottomlevel+".html")
 			if err != nil {
 				renderTemplate(w, &Page{Title: "Resource not found", Body: "<h1> 404, resource not found </h1>"})
-				return
+			} else {
+
+				renderTemplate(w, page)
+				firstLoad = true
+
+				cacheLock.Lock()
+				cache[toplevel+"/"+bottomlevel] = page
+				cacheLock.Unlock()
 			}
-
-			renderTemplate(w, page)
-
-			cacheLock.Lock()
-			cache[toplevel+"/"+bottomlevel] = page
-			cacheLock.Unlock()
 		}
 
 	}
+
+	finishTime := time.Now()
+
+	log.Printf("[%s] %q %v %t\n", r.Method, r.URL.String(), finishTime.Sub(initalTime), firstLoad)
 
 }
 
@@ -85,6 +94,14 @@ var validPath *regexp.Regexp
 
 func makeHandler(fn func(http.ResponseWriter, *http.Request, string, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Printf("Paniced: %+v", err)
+				http.Error(w, http.StatusText(500), 500)
+
+			}
+		}()
+
 		m := validPath.FindStringSubmatch(r.URL.Path)
 		if m == nil {
 			return
